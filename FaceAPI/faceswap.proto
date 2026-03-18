@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package faceswap;
+
+option java_multiple_files = true;
+option java_package = "com.vijay.faceswap.grpc";
+option java_outer_classname = "FaceSwapProto";
+
+service FaceSwapService {
+  rpc SwapFace (SwapRequest) returns (SwapResponse) {}
+}
+
+message SwapRequest {
+  bytes source_image = 1;
+  bytes target_image = 2;
+}
+
+message SwapResponse {
+  bool success = 1;
+  string message = 2;
+  bytes swapped_image = 3;
+}
