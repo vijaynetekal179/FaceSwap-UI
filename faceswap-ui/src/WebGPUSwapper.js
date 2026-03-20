@@ -7,46 +7,73 @@ export const isWebGPULoaded = () => session !== null;
 export const initWebGPU = async (onProgress) => {
     if (session) return;
     try {
-        console.log("Fetching model into RAM...");
-        const response = await fetch('/hyperswap_1c_256.onnx');
+        const url = '/hyperswap_1c_256.onnx';
+        const cacheName = 'facemorph-ai-models-v1';
         
-        if (!response.ok) throw new Error("Failed to fetch model.");
+        // 1. Check if the model is ALREADY perfectly saved on the user's hard drive!
+        const cache = await caches.open(cacheName);
+        let cachedResponse = await cache.match(url);
         
-        const contentLength = response.headers.get('content-length');
-        const total = contentLength ? parseInt(contentLength, 10) : 0;
-        let loaded = 0;
-        
-        if (onProgress && total) {
-            onProgress(0, total);
-        }
-        
-        const reader = response.body.getReader();
-        const chunks = [];
-        
-        while(true) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            loaded += value.length;
-            if (onProgress && total) {
-                onProgress(loaded, total);
+        let modelBuffer;
+
+        if (cachedResponse) {
+            console.log("CACHE HIT: Model found in persistent local storage! Loading instantly...");
+            
+            // It's already fully downloaded, so we instantly complete the progress bar UI
+            const total = parseInt(cachedResponse.headers.get('content-length') || 0, 10);
+            if (onProgress && total) onProgress(total, total);
+            
+            // Read from the persistent hard drive cache into RAM
+            modelBuffer = await cachedResponse.arrayBuffer();
+        } else {
+            console.log("CACHE MISS: Fetching model from server for the first time...");
+            const response = await fetch(url);
+            
+            if (!response.ok) throw new Error("Failed to fetch model from server.");
+            
+            const contentLength = response.headers.get('content-length');
+            const total = contentLength ? parseInt(contentLength, 10) : 0;
+            
+            if (!total) {
+                if (onProgress) onProgress(0, 0);
+                ort.env.wasm.numThreads = Math.max(1, navigator.hardwareConcurrency - 1 || 1);
+                session = await ort.InferenceSession.create(url, { executionProviders: ['webgpu', 'wasm'] });
+                if (onProgress) onProgress(1, 1);
+                return;
             }
-        }
-        
-        console.log("Model downloaded to RAM, stitching chunks...");
-        const modelBuffer = new Uint8Array(loaded);
-        let position = 0;
-        for(let chunk of chunks) {
-            modelBuffer.set(chunk, position);
-            position += chunk.length;
+
+            // Memory-safe direct streaming
+            const bufferArray = new Uint8Array(total);
+            let loaded = 0;
+            
+            if (onProgress) onProgress(0, total);
+            
+            const reader = response.body.getReader();
+            while(true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                
+                bufferArray.set(value, loaded); 
+                loaded += value.length;
+                
+                if (onProgress) onProgress(loaded, total);
+            }
+            
+            // 2. SAVING THE MODEL PERMANENTLY:
+            // We successfully downloaded the clean Array. Before we boot it up,
+            // we save this exact array into the browser's persistent hard drive cache!
+            console.log("Saving 400MB model permanently to Offline Storage Cache...");
+            const offlineResponse = new Response(bufferArray, {
+                headers: { 'content-length': total.toString(), 'content-type': 'application/octet-stream' }
+            });
+            await cache.put(url, offlineResponse);
+            
+            modelBuffer = bufferArray.buffer;
         }
 
-        console.log("Initializing ONNX Inference Session...");
+        console.log("Initializing ONNX Inference Session from ArrayBuffer...");
         ort.env.wasm.numThreads = Math.max(1, navigator.hardwareConcurrency - 1 || 1);
-        
-        // Critical: Added 'wasm' (WebAssembly CPU) fallback.
-        // If a device blocks WebGPU (like strict MacOS Safari settings or insecure LANs), it will automatically fallback to CPU!
-        session = await ort.InferenceSession.create(modelBuffer.buffer, { executionProviders: ['webgpu', 'wasm'] });
+        session = await ort.InferenceSession.create(modelBuffer, { executionProviders: ['webgpu', 'wasm'] });
         console.log("Session initialized successfully!");
     } catch (e) {
         console.error("Initialization failed:", e);

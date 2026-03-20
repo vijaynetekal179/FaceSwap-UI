@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import imageCompression from 'browser-image-compression';
-import { Upload, Camera, Zap, Download, Clock, Image as ImageIcon, Cpu, UserCheck, UserPlus, CheckCircle2, HardDriveDownload } from 'lucide-react';
+import { Upload, Camera, Zap, Download, Clock, Image as ImageIcon, Cpu, UserCheck, UserPlus, CheckCircle2, HardDriveDownload, X } from 'lucide-react';
 import './App.css';
 import { runWebGPUSwap, initWebGPU, isWebGPULoaded } from './WebGPUSwapper';
 import { cropTargetCanvas, pasteBackCanvas } from './CanvasHelper';
@@ -20,6 +20,7 @@ function App() {
   const [userType, setUserType] = useState(null); // 'new' | 'returning' | null
   const [userNameInput, setUserNameInput] = useState('');
   const [confirmedName, setConfirmedName] = useState(null);
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   // Source State
   const [sourceImage, setSourceImage] = useState(null);
@@ -37,6 +38,16 @@ function App() {
   const [isSwapping, setIsSwapping] = useState(false);
   const [progressStep, setProgressStep] = useState(0);
   const [error, setError] = useState(null);
+  
+  // Auto-hide error after 5 seconds
+  useEffect(() => {
+    if (error) {
+      const timer = setTimeout(() => {
+        setError(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
   
   // Model Loading State
   const [isModelLoading, setIsModelLoading] = useState(false);
@@ -73,6 +84,8 @@ function App() {
       
       setSourceEmbedding({ embedding_norm: data.embedding_norm });
       setConfirmedName(data.name);
+      setShowSuccessBanner(true);
+      setTimeout(() => setShowSuccessBanner(false), 7000);
     } catch (err) {
       console.error(err);
       setError(`Failed to register: ${err?.response?.data?.detail || err.message}`);
@@ -97,6 +110,8 @@ function App() {
       if (storedSources[name]) {
           setSourceEmbedding({ embedding_norm: storedSources[name] });
           setConfirmedName(name);
+          setShowSuccessBanner(true);
+          setTimeout(() => setShowSuccessBanner(false), 7000);
       } else {
           setError(`No face print found locally for '${name}'. Did you register on this exact device?`);
       }
@@ -154,18 +169,21 @@ function App() {
     setResultImage(null);
     
     try {
+      // Step 1: Securely Hash the UNCOMPRESSED Target File (User's Core Idea!)
+      // This is incredibly smart. Hashing the raw file guarantees absolute cache uniqueness
+      // without relying on browser-specific Canvas Compression variations.
+      setProgressStep(1);
+      const targetHash = await hashFile(targetImage);
+      
       const options = { maxSizeMB: 1, maxWidthOrHeight: 1024, useWebWorker: true };
       const compressedTarget = await imageCompression(targetImage, options);
-      const startTime = performance.now();
       
-      // Step 1: Target Matrix Resolving
-      setProgressStep(1);
-      const targetHash = await hashFile(compressedTarget);
+      const startTime = performance.now();
       let affineMatrix = null;
       
       const storedTargets = JSON.parse(localStorage.getItem('target_embeddings') || '{}');
       if (storedTargets[targetHash]) {
-          console.log("Local Target Cache HIT: Bypassing Server entirely!");
+          console.log("Local Target Cache HIT: Exact File Matched! Bypassing Server...");
           affineMatrix = storedTargets[targetHash];
       } else {
           console.log("Local Target Cache MISS: Asking Server to calculate Affine Math...");
@@ -221,7 +239,7 @@ function App() {
   // UI Renderers
   const renderUserSelection = () => (
     <div className="user-selection-card fade-in">
-      <h2>Welcome to FaceMorph</h2>
+      <h2>Welcome to FaceSwap</h2>
       <p>Select your user type to get started</p>
       
       <div className="selection-buttons mt-4">
@@ -240,17 +258,16 @@ function App() {
   );
 
   const renderRegistrationFlow = () => (
-    <div className="upload-box fade-in">
-      <div className="box-header">
-         <span className="step-number">1</span>
+    <div className="upload-box fade-in" style={{ maxWidth: '500px', margin: '0 auto' }}>
+      <div className="box-header" style={{ justifyContent: 'center' }}>
          <h2>Register Face Print</h2>
       </div>
-      <p className="box-desc">Choose an identifier and upload your source photo.</p>
+      <p className="box-desc" style={{ textAlign: 'center' }}>Choose an identifier and upload your source photo.</p>
       
       <input 
         type="text" 
         className="name-input" 
-        placeholder="Enter a unique name (e.g. johnny)" 
+        placeholder="Enter your name" 
         value={userNameInput}
         onChange={e => setUserNameInput(e.target.value)}
         disabled={isExtracting}
@@ -277,21 +294,21 @@ function App() {
 
       <button 
         className="save-btn mt-4" 
+        style={{ background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))', border: 'none' }}
         onClick={handleSaveNewUser}
         disabled={!sourceImage || !userNameInput || isExtracting}
       >
-        {isExtracting ? 'Extracting via Server...' : 'Save Array to Browser Storage'}
+        {isExtracting ? 'Uploading...' : 'Upload'}
       </button>
     </div>
   );
 
   const renderReturningFlow = () => (
-    <div className="upload-box fade-in">
-      <div className="box-header">
-         <span className="step-number">1</span>
+    <div className="upload-box fade-in" style={{ maxWidth: '500px', margin: '0 auto' }}>
+      <div className="box-header" style={{ justifyContent: 'center' }}>
          <h2>Load Face Print</h2>
       </div>
-      <p className="box-desc">Enter your registered name to load your embedding.</p>
+      <p className="box-desc" style={{ textAlign: 'center' }}>Enter your registered name</p>
       
       <input 
         type="text" 
@@ -304,10 +321,11 @@ function App() {
 
       <button 
         className="save-btn mt-4" 
+        style={{ background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))', border: 'none' }}
         onClick={() => fetchExistingUser()}
         disabled={!userNameInput || isExtracting}
       >
-        {isExtracting ? 'Loading locally...' : 'Fetch Array from Browser Storage'}
+        {isExtracting ? 'Loading locally...' : 'Fetch Face Print'}
       </button>
     </div>
   );
@@ -315,7 +333,6 @@ function App() {
   const renderTargetUpload = () => (
     <div className="upload-box fade-in">
        <div className="box-header">
-         <span className="step-number">2</span>
          <h2>Target Image</h2>
        </div>
        <p className="box-desc">The photo to paste '{confirmedName}' onto</p>
@@ -344,18 +361,30 @@ function App() {
     <div className="app-container">
       <header className="header">
         <div className="logo-container">
-          <span className="logo-emoji">🎭</span>
-          <h1>FaceMorph Edge</h1>
+         
+          <h1>FaceSwap</h1>
         </div>
-        <p className="subtitle">100% Zero-Latency Serverless Edge Engine</p>
         
-        {userType && (
-          <button className="reset-btn mt-4" onClick={resetFlow}>Start Over / Switch User</button>
+       {userType && (
+          <div className="action-buttons mt-4" style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+            <button className="reset-btn" onClick={resetFlow}>Start Over</button>
+            <button className="reset-btn" onClick={() => {
+              resetFlow();
+              setUserType('returning');
+            }}>Switch User</button>
+          </div>
         )}
       </header>
 
       <main className="main-content">
-        {error && <div className="error-message">{error}</div>}
+        {error && (
+          <div className="error-message fade-in" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{error}</span>
+            <button onClick={() => setError(null)} style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}>
+              <X size={18} />
+            </button>
+          </div>
+        )}
 
         {!userType && renderUserSelection()}
 
@@ -367,10 +396,17 @@ function App() {
 
         {confirmedName && (
           <>
-            <div className="success-banner fade-in">
-               <CheckCircle2 color="#4ade80" />
-               <span>Face print for <strong>{confirmedName}</strong> loaded entirely offline!</span>
-            </div>
+            {showSuccessBanner && (
+              <div className="success-banner fade-in" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                   <CheckCircle2 color="#4ade80" />
+                   <span>Face print for <strong>{confirmedName}</strong> loaded entirely offline!</span>
+                 </div>
+                 <button onClick={() => setShowSuccessBanner(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                   <X size={18} />
+                 </button>
+              </div>
+            )}
 
             <div className="upload-section mt-4">
               {/* Target Box */}
@@ -379,19 +415,17 @@ function App() {
               {/* Action Box */}
               <div className="upload-box fade-in">
                  <div className="box-header">
-                   <span className="step-number">3</span>
                    <h2>Execute Swap</h2>
                  </div>
-                 <p className="box-desc">Process the transformation entirely inside your browser hardware.</p>
 
                  {/* New Model Loading UI */}
                  {!isModelReady ? (
                    <div className="model-loading-ui mt-4">
-                     <p style={{ color: "var(--text-secondary)", marginBottom: "12px", fontSize: "0.95rem" }}>
-                        {isModelLoading 
-                          ? `Downloading AI Model securely into your local Browser Memory...`
-                          : `Your browser needs to cache the 400 MB Graphics Model to compute faces offline.`}
-                     </p>
+                     {isModelLoading && (
+                       <p style={{ color: "var(--text-secondary)", marginBottom: "12px", fontSize: "0.95rem" }}>
+                          Downloading...
+                       </p>
+                     )}
                      
                      {isModelLoading ? (
                        <div className="progress-container fade-in">
@@ -400,7 +434,7 @@ function App() {
                          </div>
                          <p style={{ marginTop: '8px', fontSize: '0.85rem', color: 'var(--accent-blue)', textAlign: 'right' }}>
                            {modelTotalSize > 0 
-                             ? `${(modelProgress / (1024*1024)).toFixed(1)} MB / ${(modelTotalSize / (1024*1024)).toFixed(1)} MB`
+                             ? `${((modelProgress / modelTotalSize) * 100).toFixed(0)} %`
                              : "Connecting directly..."}
                          </p>
                        </div>
@@ -408,18 +442,13 @@ function App() {
                        <button className="swap-button mt-4" onClick={loadModelToRam}>
                           <span className="button-content">
                             <HardDriveDownload size={20} />
-                            Download Model to RAM
+                           Get started with FaceSwap
                           </span>
                        </button>
                      )}
                    </div>
                  ) : (
                    <>
-                      <div className="success-banner fade-in mt-4" style={{ padding: '12px', background: 'rgba(79, 142, 247, 0.1)', borderColor: 'var(--accent-blue)', color: 'var(--accent-blue)' }}>
-                        <Cpu size={18} />
-                        <span style={{ fontSize: "0.9rem" }}>AI Model successfully Cached in Browser!</span>
-                      </div>
-                      
                       <button 
                         className={`swap-button mt-4 ${(!targetImage || isSwapping) ? 'disabled' : ''}`}
                         onClick={handleSwap}
@@ -428,34 +457,15 @@ function App() {
                         {isSwapping ? (
                           <span className="button-content">
                             <div className="spinner"></div>
-                            Processing deeply offline...
+                            Processing ...
                           </span>
                         ) : (
                           <span className="button-content">
                             <Zap size={20} />
-                            Swap Faces (Zero Server Ping)
+                            Swap Faces
                           </span>
                         )}
                       </button>
-
-                      {isSwapping && (
-                        <div className="progress-container fade-in mt-4">
-                          <div className="steps-list">
-                            <div className={`step-item ${progressStep >= 1 ? 'active' : ''}`}>
-                              <div className="step-dot"></div>
-                              <span>1. Fetching Coordinates (Local)</span>
-                            </div>
-                            <div className={`step-item ${progressStep >= 2 ? 'active' : ''}`}>
-                              <div className="step-dot"></div>
-                              <span>2. AI Generation (GPU WebAssembly)</span>
-                            </div>
-                            <div className={`step-item ${progressStep >= 3 ? 'active' : ''}`}>
-                              <div className="step-dot"></div>
-                              <span>3. Edge Raster Blending (Canvas)</span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
                    </>
                  )}
               </div>
@@ -477,13 +487,6 @@ function App() {
                 </div>
               </div>
               <div className="metric-card">
-                <Cpu size={16} />
-                <div className="metric-info">
-                  <span className="metric-label">Engine</span>
-                  <span className="metric-value">100% Client Edge</span>
-                </div>
-              </div>
-              <div className="metric-card">
                 <Download size={16} />
                 <div className="metric-info">
                   <span className="metric-label">Output Size</span>
@@ -491,12 +494,13 @@ function App() {
                 </div>
               </div>
             </div>
-
-            <div className="comparison-grid">
-              <div className="comparison-item">
-                <h3>Original Target</h3>
-                <img src={targetPreview} alt="Original" />
-              </div>
+<div className="comparison-grid">
+              {sourcePreview && (
+                <div className="comparison-item">
+                  <h3>Source Image</h3>
+                  <img src={sourcePreview} alt="Source" />
+                </div>
+              )}
               <div className="comparison-item result-highlight">
                 <h3>Swapped Result</h3>
                 <img src={resultImage} alt="Result" />
