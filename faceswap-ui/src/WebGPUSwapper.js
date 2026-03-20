@@ -7,7 +7,7 @@ export const isWebGPULoaded = () => session !== null;
 export const initWebGPU = async (onProgress) => {
     if (session) return;
     try {
-        const url = '/hyperswap_1c_256.onnx';
+        const url = `http://${window.location.hostname}:8000/models/hyperswap_1c_256.onnx`;
         const cacheName = 'facemorph-ai-models-v1';
         
         // 1. Check if the model is ALREADY perfectly saved on the user's hard drive!

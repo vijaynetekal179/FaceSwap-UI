@@ -6,8 +6,11 @@ import time
 import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import uvicorn
+import cv2
 
 # Adjust this path if your facefusion folder is located elsewhere
 FACEFUSION_DIR = r"C:\Users\devadmin\facefusion"
@@ -97,6 +100,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve the massive FaceFusion AI models directly to the browser
+models_dir = os.path.join(FACEFUSION_DIR, ".assets", "models")
+if os.path.exists(models_dir):
+    app.mount("/models", StaticFiles(directory=models_dir), name="models")
 
 # A critically important lock to ensure FaceFusion only processes 1 image at a time natively.
 # This completely prevents VRAM overflow crashes when multiple users hit the API at once.
@@ -457,6 +465,105 @@ async def extract_source(name: str = Form(...), source: UploadFile = File(...)):
     finally:
         if src_path and os.path.exists(src_path):
             os.remove(src_path)
+
+def extract_skin_tone(vision_frame, face):
+    x1, y1, x2, y2 = map(int, face.bounding_box)
+    h, w = vision_frame.shape[:2]
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(w, x2)
+    y2 = min(h, y2)
+    
+    crop = vision_frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return [0.0] * 6
+        
+    # FIX: Robust skin isolation. HSV hardcoded limits completely fail on extreme dark complexions (low V/Brightness).
+    # Instead, we mathematically sample pure facial skin by grabbing the central 30% of the bounding box (nose, inner cheeks), completely avoiding hair/backgrounds.
+    bh, bw = crop.shape[:2]
+    cy, cx = bh // 2, bw // 2
+    qy, qx = int(bh * 0.15), int(bw * 0.15)
+    
+    center_crop = crop[cy - qy: cy + qy, cx - qx: cx + qx]
+    if center_crop.size == 0:
+        center_crop = crop
+        
+    lab = cv2.cvtColor(center_crop, cv2.COLOR_BGR2LAB)
+    skin_pixels = lab.reshape(-1, 3)
+        
+    L_mean, a_mean, b_mean = np.mean(skin_pixels, axis=0)
+    L_std, a_std, b_std = np.std(skin_pixels, axis=0)
+    
+    return [float(L_mean), float(a_mean), float(b_mean), float(L_std), float(a_std), float(b_std)]
+
+@app.post("/api/v1/extract-user-tone")
+async def extract_user_tone(source: UploadFile = File(...)):
+    """ Extracts the 6D LAB skin tone mathematically for matching """
+    print(f"Extracting user skin tone for {source.filename}...", flush=True)
+    src_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as src_file:
+            src_path = src_file.name
+            src_file.write(await source.read())
+            
+        from facefusion.vision import read_static_image
+        source_vision_frame = read_static_image(src_path)
+        faces = get_many_faces([source_vision_frame])
+        
+        if not faces:
+            raise HTTPException(status_code=400, detail="No face detected in source image")
+            
+        from facefusion.face_selector import sort_faces_by_order
+        faces = sort_faces_by_order(faces, 'large-small')
+        
+        skin_tone = extract_skin_tone(source_vision_frame, faces[0])
+        return {"skin_tone": skin_tone}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if src_path and os.path.exists(src_path):
+            os.remove(src_path)
+
+class StockPaths(BaseModel):
+    paths: list[str]
+
+@app.post("/api/v1/extract-stock-tones")
+async def extract_stock_tones(payload: StockPaths):
+    """ Batch extracts 6D LAB skin tone encodings internally for a list of local UI stock images """
+    print(f"Extracting skin tones for {len(payload.paths)} stock images...", flush=True)
+    results = {}
+    
+    # Path navigation: from FaceAPI to faceswap-ui/public
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "faceswap-ui", "public"))
+    
+    try:
+        from facefusion.vision import read_static_image
+        from facefusion.face_selector import sort_faces_by_order
+        
+        for path in payload.paths:
+            clean_path = path.lstrip('/')
+            full_path = os.path.join(base_dir, clean_path)
+            if not os.path.exists(full_path):
+                print(f"Warning: Stock image not found at {full_path}", flush=True)
+                continue
+                
+            vision_frame = read_static_image(full_path)
+            if vision_frame is None:
+                continue
+                
+            faces = get_many_faces([vision_frame])
+            if not faces:
+                continue
+                
+            faces = sort_faces_by_order(faces, 'large-small')
+            tone = extract_skin_tone(vision_frame, faces[0])
+            results[path] = tone
+            
+        return {"stock_tones": results}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/extract-target")
 async def extract_target(target: UploadFile = File(...)):
