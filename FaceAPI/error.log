@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "C:\faceSwap\FaceSwap-UI\FaceAPI\server.py", line 86, in <module>
+    if not init_facefusion():
+  File "C:\faceSwap\FaceSwap-UI\FaceAPI\server.py", line 48, in init_facefusion
+    program = create_program()
+  File "C:\faceSwap\facefusion\facefusion\program.py", line 300, in create_program
+    sub_program.add_parser('run', help = translator.get('help.run'), parents = [ create_config_path_program(), create_temp_path_program(), create_jobs_path_program(), create_source_paths_program(), create_target_path_program(), create_output_path_program(), collect_step_program(), create_uis_program(), create_benchmark_program(), collect_job_program() ], formatter_class = create_help_formatter_large)
+  File "C:\faceSwap\facefusion\facefusion\program.py", line 288, in collect_step_program
+    return ArgumentParser(parents = [ create_face_detector_program(), create_face_landmarker_program(), create_face_selector_program(), create_face_masker_program(), create_voice_extractor_program(), create_frame_extraction_program(), create_output_creation_program(), create_processors_program() ], add_help = False)
+  File "C:\faceSwap\facefusion\facefusion\program.py", line 171, in create_output_creation_program
+    available_encoder_set = get_available_encoder_set()
+  File "C:\faceSwap\facefusion\facefusion\ffmpeg.py", line 91, in get_available_encoder_set
+    process = run_ffmpeg(commands)
+  File "C:\faceSwap\facefusion\facefusion\ffmpeg.py", line 51, in run_ffmpeg
+    process = subprocess.Popen(commands, stderr = subprocess.PIPE, stdout = subprocess.PIPE)
+  File "C:\Users\Adithya V Kotian\AppData\Local\Programs\Python\Python310\lib\subprocess.py", line 971, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "C:\Users\Adithya V Kotian\AppData\Local\Programs\Python\Python310\lib\subprocess.py", line 1380, in _execute_child
+    args = list2cmdline(args)
+  File "C:\Users\Adithya V Kotian\AppData\Local\Programs\Python\Python310\lib\subprocess.py", line 563, in list2cmdline
+    for arg in map(os.fsdecode, seq):
+  File "C:\Users\Adithya V Kotian\AppData\Local\Programs\Python\Python310\lib\os.py", line 823, in fsdecode
+    filename = fspath(filename)  # Does type-checking of `filename`.
+TypeError: expected str, bytes or os.PathLike object, not NoneType

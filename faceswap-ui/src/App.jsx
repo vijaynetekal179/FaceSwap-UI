@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import imageCompression from 'browser-image-compression';
 import { Upload, Camera, Zap, Download, Clock, Image as ImageIcon, Cpu, UserCheck, UserPlus, CheckCircle2, HardDriveDownload, X } from 'lucide-react';
@@ -6,7 +6,7 @@ import './App.css';
 import { runWebGPUSwap, initWebGPU, isWebGPULoaded } from './WebGPUSwapper';
 import { cropTargetCanvas, pasteBackCanvas } from './CanvasHelper';
 
-const BACKEND_URL = `http://${window.location.hostname}:8000`;
+const BACKEND_URL = "";
 
 const hashFile = async (file) => {
     const arrayBuffer = await file.arrayBuffer();
@@ -54,6 +54,7 @@ function App() {
   const [modelProgress, setModelProgress] = useState(0);
   const [modelTotalSize, setModelTotalSize] = useState(0);
   const [isModelReady, setIsModelReady] = useState(false);
+  const loadInitiated = useRef(false);
   
   // API Calls
 
@@ -140,10 +141,11 @@ function App() {
   };
 
   const loadModelToRam = async () => {
-    if (isWebGPULoaded() || isModelReady) {
+    if (isWebGPULoaded() || isModelReady || loadInitiated.current) {
        setIsModelReady(true);
        return;
     }
+    loadInitiated.current = true;
     setIsModelLoading(true);
     setError(null);
     try {
@@ -159,6 +161,11 @@ function App() {
       setIsModelLoading(false);
     }
   };
+
+  // Background model loading on mount
+  useEffect(() => {
+    loadModelToRam();
+  }, []);
 
   const handleSwap = async () => {
     if (!sourceEmbedding || !targetImage) return;
@@ -359,11 +366,20 @@ function App() {
 
   return (
     <div className="app-container">
-      <header className="header">
+      <header className="header" style={{ position: 'relative' }}>
         <div className="logo-container">
          
           <h1>FaceSwap</h1>
         </div>
+
+        {isModelLoading && (
+          <div style={{ position: 'absolute', right: '20px', top: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="spinner" style={{ width: '16px', height: '16px', borderWidth: '2px' }}></div>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              Initializing AI model: {modelTotalSize > 0 ? `${((modelProgress / modelTotalSize) * 100).toFixed(0)}%` : "Connecting..."}
+            </span>
+          </div>
+        )}
         
        {userType && (
           <div className="action-buttons mt-4" style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>

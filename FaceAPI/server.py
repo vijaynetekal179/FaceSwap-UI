@@ -1,5 +1,10 @@
 import os
 import sys
+
+# Ensure venv/Scripts is in PATH so facefusion finds ffmpeg.exe installed there
+venv_scripts = os.path.abspath(os.path.join(os.path.dirname(__file__), "venv", "Scripts"))
+if venv_scripts not in os.environ.get("PATH", ""):
+    os.environ["PATH"] += os.pathsep + venv_scripts
 import tempfile
 import traceback
 import time
@@ -10,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # Adjust this path if your facefusion folder is located elsewhere
-FACEFUSION_DIR = r"C:\Users\devadmin\facefusion"
+FACEFUSION_DIR = r"C:\faceSwap\facefusion"
 FACEFUSION_SCRIPT = os.path.join(FACEFUSION_DIR, "facefusion.py")
 
 # Emulate command line so FaceFusion thinks we are running via CLI
@@ -62,8 +67,8 @@ def init_facefusion():
             '--face-enhancer-model', 'gfpgan_1.4',
             '--face-enhancer-blend', '100',
 
-            # --- Execution: Nvidia GPU ---
-            '--execution-providers', 'cuda',
+            # --- Execution: Nvidia CPU ---
+            '--execution-providers', 'cpu',
             # 4 threads is often better for laptop GPUs to avoid overheating bottlenecks
             '--execution-thread-count', '4',
             '--video-memory-strategy', 'tolerant'
@@ -81,6 +86,15 @@ def init_facefusion():
         if os.path.exists(dummy_path):
             os.remove(dummy_path)
 
+
+import urllib.request
+cdn_model_url = "https://d2vzalqc0smhzt.cloudfront.net/hyperswap.onnx"
+target_model_path = os.path.join(FACEFUSION_DIR, ".assets", "models", "hyperswap_1c_256.onnx")
+if not os.path.exists(target_model_path):
+    print(f"Downloading hyperswap ONNX model from CDN...", flush=True)
+    os.makedirs(os.path.dirname(target_model_path), exist_ok=True)
+    urllib.request.urlretrieve(cdn_model_url, target_model_path)
+    print(f"Model downloaded successfully!", flush=True)
 
 # Pre-initialize FaceFusion before spinning up the web server
 if not init_facefusion():
