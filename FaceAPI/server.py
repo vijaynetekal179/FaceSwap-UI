@@ -32,6 +32,7 @@ from facefusion.types import Face
 from facefusion.vision import read_static_image, write_image, extract_vision_mask, conditional_merge_vision_mask
 from facefusion.face_selector import select_faces
 import numpy as np
+import cv2
 import json
 import csv
 import base64
@@ -87,6 +88,60 @@ def init_facefusion():
             os.remove(dummy_path)
 
 
+# ─── Skin Tone Extraction (HSV Masking → LAB) ────────────────────────
+def extract_skin_tone(image_path, face_bbox=None):
+    """Extract average skin tone as LAB [L, a, b] using HSV skin masking.
+    Pass face_bbox=(x1,y1,x2,y2) for precise face crop; otherwise uses center crop.
+    """
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+
+    if face_bbox is not None:
+        x1, y1, x2, y2 = face_bbox
+        h, w = img.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        face_crop = img[y1:y2, x1:x2]
+    else:
+        h, w = img.shape[:2]
+        margin_y, margin_x = int(h * 0.2), int(w * 0.2)
+        face_crop = img[margin_y:h - margin_y, margin_x:w - margin_x]
+
+    if face_crop.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(face_crop, cv2.COLOR_BGR2HSV)
+    mask1 = cv2.inRange(hsv, np.array([0, 20, 30]), np.array([50, 255, 255]))
+    mask2 = cv2.inRange(hsv, np.array([160, 20, 30]), np.array([180, 255, 255]))
+    skin_mask = mask1 | mask2
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
+
+    skin_pixels = face_crop[skin_mask > 0]
+
+    if len(skin_pixels) < 50:
+        h2, w2 = face_crop.shape[:2]
+        forehead = face_crop[int(h2*0.15):int(h2*0.35), int(w2*0.3):int(w2*0.7)]
+        if forehead.size == 0:
+            return None
+        lab = cv2.cvtColor(forehead, cv2.COLOR_BGR2LAB)
+        pixels = lab.reshape(-1, 3).astype(np.float64)
+        return np.mean(pixels, axis=0).tolist()
+
+    skin_lab = cv2.cvtColor(skin_pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2LAB)
+    skin_lab = skin_lab.reshape(-1, 3).astype(np.float64)
+    return np.mean(skin_lab, axis=0).tolist()
+
+
+# ─── Precompilation of Stock Templates ───────────────────────────────
+PUBLIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "faceswap-ui", "public"))
+STOCKS_DIR = os.path.join(PUBLIC_DIR, "stocks")
+PRECOMPILED_PATH = os.path.join(os.path.dirname(__file__), "precompiled_templates.json")
+
+
 import urllib.request
 cdn_model_url = "https://d2vzalqc0smhzt.cloudfront.net/hyperswap.onnx"
 target_model_path = os.path.join(FACEFUSION_DIR, ".assets", "models", "hyperswap_1c_256.onnx")
@@ -100,6 +155,76 @@ if not os.path.exists(target_model_path):
 if not init_facefusion():
     print("CRITICAL: Failed to initialize FaceFusion models during boot. Exiting.", flush=True)
     sys.exit(1)
+
+
+def precompile_stock_templates():
+    """Scan stocks/ folder, extract skin_lab + affine_matrix for every image, save to JSON."""
+    if os.path.exists(PRECOMPILED_PATH):
+        print(f"✓ Precompiled templates already exist at {PRECOMPILED_PATH}. Skipping.", flush=True)
+        return
+
+    if not os.path.isdir(STOCKS_DIR):
+        print(f"⚠ Stocks directory not found at {STOCKS_DIR}. Skipping precompilation.", flush=True)
+        return
+
+    print("Precompiling stock templates (skin tone + affine matrix)...", flush=True)
+    from facefusion.face_helper import warp_face_by_face_landmark_5
+    from facefusion.face_selector import sort_faces_by_order
+
+    result = {}
+
+    for folder in sorted(os.listdir(STOCKS_DIR)):
+        folder_path = os.path.join(STOCKS_DIR, folder)
+        if not os.path.isdir(folder_path):
+            continue
+
+        result[folder] = []
+        print(f"  📁 {folder}/", flush=True)
+
+        for img_file in sorted(os.listdir(folder_path)):
+            if not img_file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                continue
+
+            img_path = os.path.join(folder_path, img_file)
+
+            # Detect face → get bounding box for accurate skin crop
+            vision_frame = read_static_image(img_path)
+            faces = get_many_faces([vision_frame])
+            if not faces:
+                print(f"    ⚠ {img_file}: no face detected, skipping", flush=True)
+                continue
+
+            faces = sort_faces_by_order(faces, 'large-small')
+            target_face = faces[0]
+
+            # Use face bounding box for accurate skin tone extraction (same as test_skin_tone.py)
+            bbox = tuple(map(int, target_face.bounding_box))
+            skin_lab = extract_skin_tone(img_path, face_bbox=bbox)
+            if skin_lab is None:
+                print(f"    ⚠ {img_file}: could not extract skin tone, skipping", flush=True)
+                continue
+
+            _, affine_matrix = warp_face_by_face_landmark_5(
+                vision_frame, target_face.landmark_set.get('5/68'), 'arcface_128', (256, 256)
+            )
+
+            entry = {
+                "file": img_file,
+                "skin_lab": [round(v, 2) for v in skin_lab],
+                "affine_matrix": affine_matrix.tolist()
+            }
+            result[folder].append(entry)
+            print(f"    ✓ {img_file}: L={skin_lab[0]:.1f}", flush=True)
+
+    with open(PRECOMPILED_PATH, 'w') as f:
+        json.dump(result, f, indent=2)
+
+    total = sum(len(v) for v in result.values())
+    print(f"✓ Precompiled {total} templates across {len(result)} folders → {PRECOMPILED_PATH}", flush=True)
+
+
+# Run precompilation after FaceFusion is initialized
+precompile_stock_templates()
 
 app = FastAPI(title="FaceMorph Native API")
 
@@ -443,8 +568,8 @@ async def finalize_swap(target: UploadFile = File(...), swapped_crop_base64: str
 
 @app.post("/api/v1/extract-source")
 async def extract_source(name: str = Form(...), source: UploadFile = File(...)):
-    """ Extracts and returns the Source Face math exclusively for the Client LocalStorage """
-    print(f"Extracting source embedding for {name} to hand to LocalStorage...", flush=True)
+    """ Extracts face embedding + skin tone LAB for the Client LocalStorage """
+    print(f"Extracting source embedding + skin tone for {name}...", flush=True)
     src_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as src_file:
@@ -460,10 +585,18 @@ async def extract_source(name: str = Form(...), source: UploadFile = File(...)):
             
         from facefusion.face_selector import sort_faces_by_order
         faces = sort_faces_by_order(faces, 'large-small')
-        
+
+        # Use face bounding box for accurate skin tone extraction (same as test_skin_tone.py)
+        bbox = tuple(map(int, faces[0].bounding_box))
+        skin_lab = extract_skin_tone(src_path, face_bbox=bbox)
+        if skin_lab is None:
+            skin_lab = [150.0, 10.0, 15.0]  # Fallback: neutral mid-tone
+            print(f"  ⚠ Could not extract skin tone for {name}, using fallback", flush=True)
+
         return {
             "name": name,
-            "embedding_norm": faces[0].embedding_norm.tolist()
+            "embedding_norm": faces[0].embedding_norm.tolist(),
+            "skin_lab": [round(v, 2) for v in skin_lab]
         }
     except Exception as e:
         traceback.print_exc()
@@ -590,6 +723,68 @@ async def process_swap_with_embedding(target: UploadFile = File(...), embedding_
             for path in [tgt_path, out_path]:
                 if path and os.path.exists(path):
                     os.remove(path)
+
+# ─── Stock Templates Endpoint ────────────────────────────────────────
+@app.get("/api/v1/stock-templates")
+async def get_stock_templates():
+    """ Returns precompiled stock template data (skin_lab + affine_matrix per image). Called once by client. """
+    if not os.path.exists(PRECOMPILED_PATH):
+        raise HTTPException(status_code=404, detail="No precompiled templates found. Restart server to generate.")
+    
+    with open(PRECOMPILED_PATH, 'r') as f:
+        data = json.load(f)
+    return data
+
+
+# ─── Extract Template Endpoint (for user-uploaded templates) ─────────
+@app.post("/api/v1/extract-template")
+async def extract_template(template: UploadFile = File(...)):
+    """ Extracts skin_lab + affine_matrix for a single user-uploaded template image. """
+    print(f"Extracting template data for {template.filename}...", flush=True)
+    tgt_path = None
+    try:
+        template_bytes = await template.read()
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tgt_file:
+            tgt_path = tgt_file.name
+            tgt_file.write(template_bytes)
+        
+        # Extract skin tone
+        skin_lab = extract_skin_tone(tgt_path)
+        if skin_lab is None:
+            skin_lab = [150.0, 10.0, 15.0]  # Fallback
+            print(f"  ⚠ Could not extract skin tone, using fallback", flush=True)
+        
+        # Extract affine matrix
+        from facefusion.vision import read_static_image
+        vision_frame = read_static_image(tgt_path)
+        faces = get_many_faces([vision_frame])
+        
+        if not faces:
+            raise HTTPException(status_code=400, detail="No face detected in template image")
+        
+        from facefusion.face_selector import sort_faces_by_order
+        from facefusion.face_helper import warp_face_by_face_landmark_5
+        faces = sort_faces_by_order(faces, 'large-small')
+        target_face = faces[0]
+        
+        _, affine_matrix = warp_face_by_face_landmark_5(
+            vision_frame, target_face.landmark_set.get('5/68'), 'arcface_128', (256, 256)
+        )
+        
+        return {
+            "skin_lab": [round(v, 2) for v in skin_lab],
+            "affine_matrix": affine_matrix.tolist()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tgt_path and os.path.exists(tgt_path):
+            os.remove(tgt_path)
+
 
 if __name__ == '__main__':
     # Running native Python API directly on port 8000
